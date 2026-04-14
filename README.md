@@ -23,9 +23,9 @@
 | Kode | Topik | File | Status |
 |---|---|---|---|
 | R1 | Software Security Attack | [r1-software-attack.md](r1-software-attack.md) | ✅ Selesai |
-| R2 | Buffer Overflow & Shellcode | [r2-buffer-overflow.md](r2-buffer-overflow.md) | ⏳ Proses |
-| R3 | OS-Level Attacks | [r3-os-attacks.md](r3-os-attacks.md) | ⏳ Proses |
-| R4 | Web Security Attacks | [r4-web-attacks.md](r4-web-attacks.md) | ⏳ Proses |
+| R2 | Buffer Overflow & Shellcode | [r2-buffer-overflow.md](r2-buffer-overflow.md) | ✅ Selesai |
+| R3 | OS-Level Attacks | [r3-os-attacks.md](r3-os-attacks.md) | ✅ Selesai |
+| R4 | Web Security Attacks | [r4-web-attacks.md](r4-web-attacks.md) | ✅ Selesai |
 | R5 | Network Security | r5-network-security.md | ⏳ Proses |
 | R6 | Firewall & IDS | r6-firewall-ids.md | ⏳ Proses |
 | R7 | Kriptografi | r7-kriptografi.md | ⏳ Proses |
@@ -45,10 +45,6 @@ proyek-final/
 ├── r6-firewall-ids.md           # (Akan datang)
 ├── r7-kriptografi.md            # (Akan datang)
 └── images/                      # Screenshot bukti eksploitasi
-    ├── placeholder-r1.png
-    ├── placeholder-r2.png
-    ├── placeholder-r3.png
-    └── placeholder-r4.png
 ```
 
 ---
@@ -102,4 +98,3 @@ cat /proc/sys/kernel/randomize_va_space
   <strong>Muhammad Tamim Nugraha</strong> — 5024231060<br>
   Teknik Komputer 2023 · Institut Teknologi Sepuluh Nopember
 </p>
-# SSK
